@@ -500,3 +500,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+    ######
+    #we tryed to make the maze solver visualizer more efficient and user-friendly
+    #by reducing the cell size, optimizing the drawing logic, and improving the UI
