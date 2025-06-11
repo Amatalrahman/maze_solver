@@ -174,6 +174,59 @@ class DFSSolver(MazeSolver):
         
         return False
 
+class AStarSolver(MazeSolver):
+    def __init__(self, maze: List[List[MazeCell]]):
+        super().__init__(maze)
+        import heapq
+        self.open_set = []
+        self.g_score = {}
+        self.f_score = {}
+        self.heapq = heapq
+        self.counter = 0  # Unique counter for heapq tiebreaker
+
+    def heuristic(self, cell: MazeCell) -> int:
+        # Manhattan distance
+        return abs(cell.x - self.end.x) + abs(cell.y - self.end.y)
+
+    def solve(self):
+        start = self.start
+        self.g_score[(start.x, start.y)] = 0
+        self.f_score[(start.x, start.y)] = self.heuristic(start)
+        self.counter += 1
+        self.heapq.heappush(self.open_set, (self.f_score[(start.x, start.y)], self.counter, start))
+        self.visited.add((start.x, start.y))
+        while self.open_set:
+            _, _, self.current_cell = self.heapq.heappop(self.open_set)
+            if self.current_cell == self.end:
+                self.path = self.reconstruct_path(self.current_cell)
+                self.solution_found = True
+                yield True
+                return True
+            special_target = self.process_special_cell(self.current_cell)
+            if special_target:
+                if (special_target.x, special_target.y) not in self.visited:
+                    special_target.parent = self.current_cell
+                    self.visited.add((special_target.x, special_target.y))
+                    self.g_score[(special_target.x, special_target.y)] = self.g_score[(self.current_cell.x, self.current_cell.y)] + 1
+                    self.f_score[(special_target.x, special_target.y)] = self.g_score[(special_target.x, special_target.y)] + self.heuristic(special_target)
+                    self.counter += 1
+                    self.heapq.heappush(self.open_set, (self.f_score[(special_target.x, special_target.y)], self.counter, special_target))
+                yield False
+                continue
+            for neighbor in self.get_neighbors(self.current_cell):
+                if (neighbor.x, neighbor.y) not in self.visited:
+                    tentative_g = self.g_score[(self.current_cell.x, self.current_cell.y)] + 1
+                    if ((neighbor.x, neighbor.y) not in self.g_score) or (tentative_g < self.g_score[(neighbor.x, neighbor.y)]):
+                        neighbor.parent = self.current_cell
+                        self.g_score[(neighbor.x, neighbor.y)] = tentative_g
+                        self.f_score[(neighbor.x, neighbor.y)] = tentative_g + self.heuristic(neighbor)
+                        self.counter += 1
+                        self.heapq.heappush(self.open_set, (self.f_score[(neighbor.x, neighbor.y)], self.counter, neighbor))
+                        self.visited.add((neighbor.x, neighbor.y))
+            self.steps += 1
+            yield False
+        return False
+
 def load_maze(filename: str) -> List[List[MazeCell]]:
     try:
         with open(filename, 'r') as f:
@@ -196,7 +249,7 @@ def load_maze(filename: str) -> List[List[MazeCell]]:
             except ValueError:
                 print(f"Warning: Invalid character '{char}' at row {i}, column {j} - treating as path")
                 cell_type = TileType.PATH
-            row.append(MazeCell(i, j, cell_type))
+            row.append(MazeCell(j, i, cell_type))  # FIXED: x=j (col), y=i (row)
         maze.append(row)
     
     return maze
@@ -232,7 +285,7 @@ class Button:
 class MazeViewer:
     def __init__(self, maze: List[List[MazeCell]]):
         pygame.init()
-        self.maze = maze
+        self.original_maze = maze
         self.rows = len(maze)
         self.cols = len(maze[0]) if self.rows > 0 else 0
         
@@ -241,113 +294,98 @@ class MazeViewer:
         max_width = screen_info.current_w - 100
         max_height = screen_info.current_h - 200
         
-        # Calculate cell size that fits the maze
+        # Each panel gets a third of the width
         self.cell_size = min(BASE_CELL_SIZE, 
-                            max_width // max(1, self.cols), 
+                            max_width // (3 * max(1, self.cols)), 
                             max_height // max(1, self.rows))
         
-        # Set up viewport
-        self.view_width = min(max_width, self.cols * self.cell_size)
+        self.view_width = min(max_width // 3, self.cols * self.cell_size)
         self.view_height = min(max_height, self.rows * self.cell_size)
         
-        # Scroll position
-        self.scroll_x = 0
-        self.scroll_y = 0
-        
-        # Create window (RESIZABLE)
-        self.window_width = self.view_width
-        self.window_height = self.view_height + 150  # Space for controls
+        # Set up viewport
+        self.window_width = self.view_width * 3
+        self.window_height = self.view_height + 150
         self.screen = pygame.display.set_mode((self.window_width, self.window_height), pygame.RESIZABLE)
-        pygame.display.set_caption("Maze Solver Visualizer")
+        pygame.display.set_caption("Maze Solver Visualizer: BFS vs DFS vs A*")
         
-        # Create buttons
-        self.buttons = [
-            Button(20, self.view_height + 20, 100, 40, "BFS", BUTTON_COLOR, BUTTON_HOVER_COLOR, BUTTON_TEXT_COLOR),
-            Button(140, self.view_height + 20, 100, 40, "DFS", BUTTON_COLOR, BUTTON_HOVER_COLOR, BUTTON_TEXT_COLOR),
-            Button(260, self.view_height + 20, 100, 40, "Start", START_BUTTON_COLOR, BUTTON_HOVER_COLOR, BUTTON_TEXT_COLOR)
-        ]
-        
-        self.solver = None
-        self.solver_gen = None  # Store the generator
+        # Create three solvers with independent maze copies
+        import copy
+        self.bfs_solver = BFSSolver(copy.deepcopy(maze))
+        self.dfs_solver = DFSSolver(copy.deepcopy(maze))
+        self.astar_solver = AStarSolver(copy.deepcopy(maze))
+        self.bfs_gen = None
+        self.dfs_gen = None
+        self.astar_gen = None
         self.visualizing = False
-        self.dragging = False
-        self.last_mouse_pos = (0, 0)
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont('Arial', 20)
+        self.big_font = pygame.font.SysFont('Arial', 32, bold=True)
+        
+        # Buttons
+        self.buttons = [
+            Button(self.window_width//2 - 60, self.view_height + 20, 120, 40, "Start", START_BUTTON_COLOR, BUTTON_HOVER_COLOR, BUTTON_TEXT_COLOR)
+        ]
 
     def handle_events(self) -> bool:
         mouse_pos = pygame.mouse.get_pos()
         mouse_click = False
-        
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return False
-            
             if event.type == pygame.VIDEORESIZE:
-                # Handle window resize
                 self.window_width, self.window_height = event.w, event.h
-                self.view_width = self.window_width
+                self.view_width = self.window_width // 3
                 self.view_height = self.window_height - 150
                 self.screen = pygame.display.set_mode((self.window_width, self.window_height), pygame.RESIZABLE)
-                # Optionally, recalculate cell_size to fit new window
-                self.cell_size = min(BASE_CELL_SIZE, 
-                                    self.view_width // max(1, self.cols), 
-                                    self.view_height // max(1, self.rows))
-            
+                self.cell_size = min(BASE_CELL_SIZE, self.view_width // max(1, self.cols), self.view_height // max(1, self.rows))
             if event.type == pygame.MOUSEBUTTONDOWN:
                 mouse_click = True
-                if event.button == 1:  # Left click
-                    self.last_mouse_pos = mouse_pos
-                    if mouse_pos[1] < self.view_height:  # Click on maze area
-                        self.dragging = True
-                
-            if event.type == pygame.MOUSEBUTTONUP:
-                if event.button == 1:
-                    self.dragging = False
-                    
-            if event.type == pygame.MOUSEMOTION and self.dragging:
-                dx = mouse_pos[0] - self.last_mouse_pos[0]
-                dy = mouse_pos[1] - self.last_mouse_pos[1]
-                self.scroll_x = max(0, min(self.scroll_x - dx, self.cols * self.cell_size - self.view_width))
-                self.scroll_y = max(0, min(self.scroll_y - dy, self.rows * self.cell_size - self.view_height))
-                self.last_mouse_pos = mouse_pos
-        
-        # Handle button clicks
+        # Handle Start button
         if mouse_click and not self.visualizing:
             for button in self.buttons:
                 if button.is_clicked(mouse_pos, mouse_click):
-                    if button.text == "BFS":
-                        self.solver = BFSSolver(self.maze)
-                        self.solver_gen = None
-                    elif button.text == "DFS":
-                        self.solver = DFSSolver(self.maze)
-                        self.solver_gen = None
-                    elif button.text == "Start" and self.solver:
-                        self.solver_gen = self.solver.solve()  # Create the generator
+                    if button.text == "Start":
+                        self.bfs_solver = BFSSolver([ [MazeCell(cell.x, cell.y, cell.type) for cell in row] for row in self.original_maze])
+                        self.dfs_solver = DFSSolver([ [MazeCell(cell.x, cell.y, cell.type) for cell in row] for row in self.original_maze])
+                        self.astar_solver = AStarSolver([ [MazeCell(cell.x, cell.y, cell.type) for cell in row] for row in self.original_maze])
+                        self.bfs_gen = self.bfs_solver.solve()
+                        self.dfs_gen = self.dfs_solver.solve()
+                        self.astar_gen = self.astar_solver.solve()
                         self.visualizing = True
-        
         return True
 
     def update(self):
-        if self.visualizing and self.solver and self.solver_gen:
-            try:
-                # Only advance if not solved
-                if not self.solver.solution_found:
-                    next(self.solver_gen)
-                    pygame.time.delay(100)  # Slightly faster visualization
-                else:
-                    self.visualizing = False  # Stop animation when solved
-            except StopIteration:
+        # Each algorithm should run independently until it finds the end
+        if self.visualizing:
+            if self.bfs_gen is not None and not self.bfs_solver.solution_found:
+                try:
+                    next(self.bfs_gen)
+                except StopIteration:
+                    self.bfs_gen = None
+            if self.dfs_gen is not None and not self.dfs_solver.solution_found:
+                try:
+                    next(self.dfs_gen)
+                except StopIteration:
+                    self.dfs_gen = None
+            if self.astar_gen is not None and not self.astar_solver.solution_found:
+                try:
+                    next(self.astar_gen)
+                except StopIteration:
+                    self.astar_gen = None
+            # Only stop visualizing when all are done
+            if ((self.bfs_solver.solution_found or self.bfs_gen is None) and
+                (self.dfs_solver.solution_found or self.dfs_gen is None) and
+                (self.astar_solver.solution_found or self.astar_gen is None)):
                 self.visualizing = False
 
-    def draw_cell(self, cell: MazeCell, rect: pygame.Rect):
-        if self.solver:
-            # Always show the current cell as yellow, even if it's the end cell
-            if cell == self.solver.current_cell:
+    def draw_cell(self, cell: MazeCell, rect: pygame.Rect, solver=None):
+        # Draw a cell for a given solver (BFS or DFS)
+        if solver:
+            if cell == solver.current_cell:
                 color = CURRENT_COLOR
-            elif cell in self.solver.path:
+            elif cell in solver.path:
                 color = PATH_COLOR_FINAL
-            elif (cell.x, cell.y) in self.solver.visited:
+            elif (cell.x, cell.y) in solver.visited:
                 color = VISITED_COLOR
             elif cell.type == TileType.START:
                 color = START_COLOR
@@ -384,51 +422,65 @@ class MazeViewer:
 
     def draw(self):
         self.screen.fill(BACKGROUND_COLOR)
-        
-        # Draw maze (only visible portion)
-        start_col = max(0, self.scroll_x // self.cell_size)
-        end_col = min(self.cols, start_col + self.view_width // self.cell_size + 2)
-        start_row = max(0, self.scroll_y // self.cell_size)
-        end_row = min(self.rows, start_row + self.view_height // self.cell_size + 2)
-        
-        for i in range(start_row, end_row):
-            for j in range(start_col, end_col):
-                cell = self.maze[i][j]
-                x = j * self.cell_size - self.scroll_x
-                y = i * self.cell_size - self.scroll_y
-                
+        # Draw BFS panel (left)
+        for i in range(self.rows):
+            for j in range(self.cols):
+                cell = self.bfs_solver.maze[i][j]
+                x = j * self.cell_size
+                y = i * self.cell_size
                 if 0 <= x < self.view_width and 0 <= y < self.view_height:
                     rect = pygame.Rect(x, y, self.cell_size, self.cell_size)
-                    self.draw_cell(cell, rect)
-        
+                    self.draw_cell(cell, rect, solver=self.bfs_solver)
+        # Draw DFS panel (middle)
+        for i in range(self.rows):
+            for j in range(self.cols):
+                cell = self.dfs_solver.maze[i][j]
+                x = self.view_width + j * self.cell_size
+                y = i * self.cell_size
+                if self.view_width <= x < self.view_width * 2 and 0 <= y < self.view_height:
+                    rect = pygame.Rect(x, y, self.cell_size, self.cell_size)
+                    self.draw_cell(cell, rect, solver=self.dfs_solver)
+        # Draw A* panel (right)
+        for i in range(self.rows):
+            for j in range(self.cols):
+                cell = self.astar_solver.maze[i][j]
+                x = self.view_width * 2 + j * self.cell_size
+                y = i * self.cell_size
+                if self.view_width * 2 <= x < self.window_width and 0 <= y < self.view_height:
+                    rect = pygame.Rect(x, y, self.cell_size, self.cell_size)
+                    self.draw_cell(cell, rect, solver=self.astar_solver)
+        # Draw panel titles
+        bfs_title = self.big_font.render("BFS", True, (0, 0, 128))
+        dfs_title = self.big_font.render("DFS", True, (128, 0, 0))
+        astar_title = self.big_font.render("A*", True, (0, 128, 0))
+        self.screen.blit(bfs_title, (self.view_width//2 - bfs_title.get_width()//2, 10))
+        self.screen.blit(dfs_title, (self.view_width + self.view_width//2 - dfs_title.get_width()//2, 10))
+        self.screen.blit(astar_title, (self.view_width*2 + self.view_width//2 - astar_title.get_width()//2, 10))
         # Draw buttons
         for button in self.buttons:
             button.check_hover(pygame.mouse.get_pos())
-            if button.text == "Start":
-                button.color = DISABLED_COLOR if not self.solver or self.visualizing else START_BUTTON_COLOR
+            button.color = DISABLED_COLOR if self.visualizing else START_BUTTON_COLOR
             button.draw(self.screen)
-        
-        # Draw instructions
-        instr_text = self.font.render("1. Select algorithm 2. Click Start | Drag to scroll", True, TEXT_COLOR)
-        self.screen.blit(instr_text, (20, self.view_height + 70))
-        
-        # Draw solver info
-        if self.solver:
-            algo_name = "BFS" if isinstance(self.solver, BFSSolver) else "DFS"
-            status = "Solved!" if self.solver.solution_found else "Solving..." if self.visualizing else "Ready"
-            steps_text = self.font.render(f"{algo_name} | Steps: {self.solver.steps} | {status}", True, TEXT_COLOR)
-            self.screen.blit(steps_text, (20, self.view_height + 100))
-            # Add effect when solved
-            if self.solver.solution_found:
-                # Flashing border effect
-                color = (0, 255, 0) if (pygame.time.get_ticks() // 300) % 2 == 0 else (255, 255, 0)
-                pygame.draw.rect(self.screen, color, (0, 0, self.window_width, self.view_height), 10)
-                # Centered message
-                big_font = pygame.font.SysFont('Arial', 48, bold=True)
-                msg = big_font.render("MAZE SOLVED!", True, color)
-                msg_rect = msg.get_rect(center=(self.window_width//2, self.view_height//2))
-                self.screen.blit(msg, msg_rect)
-        
+        # Draw info for all solvers
+        bfs_status = "Solved!" if self.bfs_solver.solution_found else "Solving..." if self.visualizing else "Ready"
+        dfs_status = "Solved!" if self.dfs_solver.solution_found else "Solving..." if self.visualizing else "Ready"
+        astar_status = "Solved!" if self.astar_solver.solution_found else "Solving..." if self.visualizing else "Ready"
+        bfs_steps = self.font.render(f"BFS | Steps: {self.bfs_solver.steps} | {bfs_status}", True, TEXT_COLOR)
+        dfs_steps = self.font.render(f"DFS | Steps: {self.dfs_solver.steps} | {dfs_status}", True, TEXT_COLOR)
+        astar_steps = self.font.render(f"A* | Steps: {self.astar_solver.steps} | {astar_status}", True, TEXT_COLOR)
+        self.screen.blit(bfs_steps, (20, self.view_height + 70))
+        self.screen.blit(dfs_steps, (self.view_width + 20, self.view_height + 70))
+        self.screen.blit(astar_steps, (self.view_width*2 + 20, self.view_height + 70))
+        # Solved effects
+        if self.bfs_solver.solution_found:
+            color = (0, 255, 0) if (pygame.time.get_ticks() // 300) % 2 == 0 else (255, 255, 0)
+            pygame.draw.rect(self.screen, color, (0, 0, self.view_width, self.view_height), 10)
+        if self.dfs_solver.solution_found:
+            color = (0, 255, 0) if (pygame.time.get_ticks() // 300) % 2 == 0 else (255, 255, 0)
+            pygame.draw.rect(self.screen, color, (self.view_width, 0, self.view_width, self.view_height), 10)
+        if self.astar_solver.solution_found:
+            color = (0, 255, 0) if (pygame.time.get_ticks() // 300) % 2 == 0 else (255, 255, 0)
+            pygame.draw.rect(self.screen, color, (self.view_width*2, 0, self.view_width, self.view_height), 10)
         pygame.display.flip()
 
     def run(self):
